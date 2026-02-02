@@ -27,13 +27,34 @@ const hostToggle = document.getElementById("hostToggle");
 const hostContent = document.getElementById("hostContent");
 const revealSolutionBtn = document.getElementById("revealSolution");
 const solutionContent = document.getElementById("solutionContent");
+const characterCardsEl = document.getElementById("characterCards");
+const hostCardEl = document.getElementById("hostCard");
+const backToSetupBtn = document.getElementById("backToSetupBtn");
+const regenerateGameBtn = document.getElementById("regenerateGameBtn");
+const exportGameBtn = document.getElementById("exportGameBtn");
+const copyShareGameBtn = document.getElementById("copyShareGameBtn");
 const surpriseMeBtn = document.getElementById("surpriseMe");
+const setupModeEl = document.getElementById("setupMode");
+const modalOverlay = document.getElementById("modalOverlay");
+const modalClose = document.getElementById("modalClose");
+const modalBody = document.getElementById("modalBody");
 
 let categories = [];
 let selectedCategoryId = null;
 let lastRequest = null;
 let currentGame = null;
 let clueMap = new Map();
+let mode = "setup";
+let activeModal = null;
+let hostRevealConfirmed = false;
+
+function on(el, event, handler) {
+  if (!el) {
+    console.warn(`Missing element for ${event} handler.`);
+    return;
+  }
+  el.addEventListener(event, handler);
+}
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
@@ -108,11 +129,26 @@ function gatherRequest() {
 }
 
 function renderGame(game) {
+  renderGameBoard(game);
+}
+
+function renderSetup() {
+  mode = "setup";
+  setupModeEl.classList.remove("hidden");
+  resultsSection.classList.add("hidden");
+}
+
+function renderGameBoard(game) {
+  mode = "game";
+  setupModeEl.classList.add("hidden");
   resultsSection.classList.remove("hidden");
   gameTitleEl.textContent = game.title;
   themeSummaryEl.textContent = game.theme_summary;
   shareCodeDisplay.textContent = game.meta.share_code;
   clueMap = new Map(game.clues.map((clue) => [clue.clue_id, clue]));
+  regenerateGameBtn.disabled = !lastRequest;
+  exportGameBtn.disabled = !currentGame;
+  copyShareGameBtn.disabled = !currentGame;
 
   storylineEl.innerHTML = game.storyline_overview
     .map((p) => `<p>${p}</p>`)
@@ -129,20 +165,36 @@ function renderGame(game) {
     )
     .join("");
 
-  propsListEl.innerHTML = game.props_list.map((prop) => `<li>${prop}</li>`).join("");
+  if (game.props_list && game.props_list.length) {
+    propsListEl.innerHTML = game.props_list.map((prop) => `<li>${prop}</li>`).join("");
+    propsListEl.closest(".panel").classList.remove("hidden");
+  } else {
+    propsListEl.innerHTML = "";
+    propsListEl.closest(".panel").classList.add("hidden");
+  }
 
-  characterSelect.innerHTML = game.character_packets
-    .map((character) => `<option value="${character.character_id}">${character.name}</option>`)
+  characterCardsEl.innerHTML = game.character_packets
+    .map(
+      (character) => `
+        <div class="clickable-card" data-character-id="${character.character_id}">
+          <h4>${character.name}</h4>
+          <p>Click to Reveal</p>
+        </div>
+      `
+    )
     .join("");
+  hostRevealConfirmed = false;
 
-  characterSelect.addEventListener("change", () =>
-    renderCharacterPacket(game, characterSelect.value)
-  );
-  renderCharacterPacket(game, characterSelect.value || game.character_packets[0].character_id);
-
-  hostContent.classList.add("hidden");
-  solutionContent.classList.add("hidden");
-  hostToggle.textContent = "I am the host";
+  if (characterSelect && characterPacketEl) {
+    characterSelect.innerHTML = game.character_packets
+      .map((character) => `<option value="${character.character_id}">${character.name}</option>`)
+      .join("");
+    characterSelect.onchange = () => renderCharacterPacket(game, characterSelect.value);
+    renderCharacterPacket(
+      game,
+      characterSelect.value || game.character_packets[0].character_id
+    );
+  }
 }
 
 function renderClueList(clueIds, clueLookup) {
@@ -170,6 +222,7 @@ function renderIntroList(lines) {
 }
 
 function renderCharacterPacket(game, characterId) {
+  if (!characterPacketEl) return;
   const packet = game.character_packets.find(
     (character) => character.character_id === characterId
   );
@@ -192,14 +245,80 @@ function renderSolution(game) {
   const murderer = game.character_packets.find(
     (character) => character.character_id === game.solution.murderer_id
   );
-  solutionContent.innerHTML = `
-    <h4>Solution Reveal</h4>
-    <p><strong>Murderer:</strong> ${murderer ? murderer.name : game.solution.murderer_id}</p>
-    <p><strong>Motive:</strong> ${game.solution.motive}</p>
-    <p><strong>Method:</strong> ${game.solution.method}</p>
-    <p><strong>Opportunity:</strong> ${game.solution.opportunity}</p>
-    <p>${game.solution.reveal_explanation}</p>
+  return `
+    <div class="modal-section">
+      <p><strong>Murderer:</strong> ${murderer ? murderer.name : game.solution.murderer_id}</p>
+      <p><strong>Motive:</strong> ${game.solution.motive}</p>
+      <p><strong>Method:</strong> ${game.solution.method}</p>
+      <p><strong>Opportunity:</strong> ${game.solution.opportunity}</p>
+      <p>${game.solution.reveal_explanation}</p>
+    </div>
   `;
+}
+
+function renderCharacterModal(character) {
+  modalBody.innerHTML = `
+    <h3>${character.name} (${character.role_title})</h3>
+    <div class="modal-section"><p>${character.backstory}</p></div>
+    <div class="modal-section"><strong>Traits:</strong> ${character.traits.join(", ")}</div>
+    <div class="modal-section"><strong>Public goal:</strong> ${character.public_goal}</div>
+    <div class="modal-section"><strong>Secret goal:</strong> ${character.secret_goal}</div>
+    <div class="modal-section"><strong>Secrets:</strong> ${character.secrets.join("; ")}</div>
+    <div class="modal-section"><strong>Alibi:</strong> ${character.alibi}</div>
+    <div class="modal-section"><strong>Connection to victim:</strong> ${character.connection_to_victim}</div>
+    <div class="modal-section"><strong>Clues:</strong> ${renderClueList(character.clue_ids, clueMap)}</div>
+    <div class="modal-section"><strong>Intro:</strong> ${renderIntroList(character.intro_monologue)}</div>
+  `;
+}
+
+function renderHostModal(game) {
+  const revealSection = hostRevealConfirmed
+    ? renderSolution(game)
+    : `
+      <div class="modal-section">
+        <p>This content is for the host only.</p>
+        <label class="modal-section">
+          <span style="margin-right: 8px; font-weight: 600;">I am the host and understand this reveals the solution.</span>
+          <input type="checkbox" id="hostConfirmCheck" />
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button id="hostRevealBtn" class="primary" type="button" disabled>Reveal Solution</button>
+      </div>
+    `;
+
+  modalBody.innerHTML = `
+    <h3>Host View</h3>
+    ${revealSection}
+  `;
+
+  if (!hostRevealConfirmed) {
+    const hostConfirmCheck = document.getElementById("hostConfirmCheck");
+    const hostRevealBtn = document.getElementById("hostRevealBtn");
+    hostConfirmCheck.addEventListener("change", () => {
+      hostRevealBtn.disabled = !hostConfirmCheck.checked;
+    });
+    hostRevealBtn.addEventListener("click", () => {
+      hostRevealConfirmed = true;
+      renderHostModal(game);
+    });
+  }
+}
+
+function openModal(type, payload) {
+  activeModal = { type, payload };
+  modalOverlay.classList.remove("hidden");
+  if (type === "character") {
+    renderCharacterModal(payload);
+  }
+  if (type === "host") {
+    renderHostModal(payload);
+  }
+}
+
+function closeModal() {
+  modalOverlay.classList.add("hidden");
+  activeModal = null;
 }
 
 async function generateGame(payload) {
@@ -231,7 +350,7 @@ async function generateGame(payload) {
   }
 }
 
-generateBtn.addEventListener("click", async () => {
+on(generateBtn, "click", async () => {
   try {
     const payload = gatherRequest();
     await generateGame(payload);
@@ -240,13 +359,13 @@ generateBtn.addEventListener("click", async () => {
   }
 });
 
-regenerateBtn.addEventListener("click", async () => {
+on(regenerateBtn, "click", async () => {
   if (lastRequest) {
     await generateGame(lastRequest);
   }
 });
 
-exportBtn.addEventListener("click", () => {
+on(exportBtn, "click", () => {
   if (!currentGame) return;
   const blob = new Blob([JSON.stringify(currentGame, null, 2)], {
     type: "application/json",
@@ -259,19 +378,19 @@ exportBtn.addEventListener("click", () => {
   URL.revokeObjectURL(url);
 });
 
-copyShareBtn.addEventListener("click", async () => {
+on(copyShareBtn, "click", async () => {
   if (!currentGame) return;
   await navigator.clipboard.writeText(currentGame.meta.share_code);
   setStatus("Share code copied to clipboard.", false);
 });
 
-copyShareInline.addEventListener("click", async () => {
+on(copyShareInline, "click", async () => {
   if (!currentGame) return;
   await navigator.clipboard.writeText(currentGame.meta.share_code);
   setStatus("Share code copied to clipboard.", false);
 });
 
-loadShareCodeBtn.addEventListener("click", () => {
+on(loadShareCodeBtn, "click", () => {
   if (!shareCodeInput.value.trim()) return;
   try {
     const data = base64UrlDecode(shareCodeInput.value.trim());
@@ -287,7 +406,7 @@ loadShareCodeBtn.addEventListener("click", () => {
   }
 });
 
-hostToggle.addEventListener("click", () => {
+on(hostToggle, "click", () => {
   if (hostContent.classList.contains("hidden")) {
     const confirmed = window.confirm("Host view reveals the solution. Continue?");
     if (!confirmed) return;
@@ -299,14 +418,14 @@ hostToggle.addEventListener("click", () => {
   }
 });
 
-revealSolutionBtn.addEventListener("click", () => {
+on(revealSolutionBtn, "click", () => {
   const confirmed = window.confirm("Reveal the solution to all players?");
   if (!confirmed) return;
   solutionContent.classList.remove("hidden");
   renderSolution(currentGame);
 });
 
-surpriseMeBtn.addEventListener("click", () => {
+on(surpriseMeBtn, "click", () => {
   selectedCategoryId = "random";
   categoryList.querySelectorAll(".category").forEach((card) => card.classList.remove("selected"));
   setStatus("Surprise Me selected.", false);
@@ -330,3 +449,49 @@ function hydrateFromStorage() {
 fetchCategories()
   .then(() => hydrateFromStorage())
   .catch(() => setStatus("Failed to load categories.", true));
+
+on(backToSetupBtn, "click", () => {
+  renderSetup();
+});
+
+on(regenerateGameBtn, "click", async () => {
+  if (lastRequest) {
+    await generateGame(lastRequest);
+  }
+});
+
+on(exportGameBtn, "click", () => {
+  exportBtn.click();
+});
+
+on(copyShareGameBtn, "click", () => {
+  copyShareBtn.click();
+});
+
+on(characterCardsEl, "click", (event) => {
+  const card = event.target.closest("[data-character-id]");
+  if (!card || !currentGame) return;
+  const character = currentGame.character_packets.find(
+    (packet) => packet.character_id === card.dataset.characterId
+  );
+  if (character) {
+    openModal("character", character);
+  }
+});
+
+on(hostCardEl, "click", () => {
+  if (!currentGame) return;
+  openModal("host", currentGame);
+});
+
+on(modalClose, "click", closeModal);
+on(modalOverlay, "click", (event) => {
+  if (event.target === modalOverlay) {
+    closeModal();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && modalOverlay && !modalOverlay.classList.contains("hidden")) {
+    closeModal();
+  }
+});
